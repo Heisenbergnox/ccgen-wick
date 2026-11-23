@@ -4,6 +4,7 @@ ccd_parts = [make_ops(2, i, j)for i in ("f", "v") for j in ([], [2], [2, 2] )]
 ccsd_e_parts = [make_ops(0, i, j)for i in ("f", "v") for j in ([], [1], [2], [1, 1])]
 ccsd_t1_parts = [make_ops(1, i, j)for i in ("f", "v") for j in ([], [1], [2], [1, 1], [1, 2], [1, 1, 1])]
 ccsd_t2_parts = [make_ops(2, i, j)for i in ("f", "v") for j in ([], [1], [2], [1, 1], [1, 2], [1, 1, 1], [2, 2], [1, 1, 1, 1], [1, 1, 2])]
+ccsd_t_parts = [make_ops(3, i, j)for i in ("v",) for j in ([2],)]
 
 def write_function(fh, name, args, parts):
     terms = get_residual(parts).split(" + ")
@@ -32,6 +33,13 @@ def write_ccsd_parts(path="ccsd_residual.py"):
         write_function(fh, "Rccsdt2", "f, g, t1, t2", ccsd_t2_parts)
 
 
+def write_ccsd_t_parts(path="ccsd_t_residual.py"):
+    with open(path, "w") as fh:
+        fh.write("import numpy as np\n")
+        write_function(fh, "tri", "f, g, t1, t2", ccsd_t_parts)
+
+
 if __name__ == "__main__":
     write_ccd_residual()
     write_ccsd_parts()
+    write_ccsd_t_parts()

@@ -1,16 +1,16 @@
 # ccgen-wick — generating coupled-cluster equations from second quantization
 
-Coupled-cluster equations get long quickly: the CCSD equations below come out as 328 terms. ccgen derives them the way you would on paper, contraction by contraction with Wick's theorem, and writes them out as NumPy code that you can run and check.
+ccgen derives coupled-cluster equations the way you would on paper, contraction by contraction with Wick's theorem. It then merges like terms and writes the result as NumPy code that you can run and check. The CCSD equations have 328 terms after the first merging stage and 80 after all three. ccgen also generates the connected triples of the (T) correction, so the example runs CCSD(T).
 
 **Coming next:**
-- merging like terms into the textbook form (see the known limitation);
+- collecting terms related by i↔j or a↔b into P(ij), P(ab) (see Known limitations);
 - CCSDT and EOM-CC;
 - plugging the generated equations into the solvers of [hf_to_cc](https://github.com/Heisenbergnox/hf_to_cc);
-- faster generated code: shared intermediates instead of one `einsum` per term.
+- faster generated code, with shared intermediates instead of one `einsum` per term.
 
 ## What's inside
 
-ccgen currently generates CCSD and CCD. With $`\bar H = e^{-T} H_N\, e^{T}`$, the CCSD equations (T = T₁ + T₂) are
+With $`\bar H = e^{-T} H_N\, e^{T}`$, the CCSD equations (T = T₁ + T₂) are
 
 ```math
 E_\text{CCSD} = \langle \Phi_0 | \bar H | \Phi_0 \rangle = \sum_{ia} f_{ia}\, t_i^a + \frac{1}{4} \sum_{ijab} \langle ij \Vert ab \rangle\, t_{ij}^{ab} + \frac{1}{2} \sum_{ijab} \langle ij \Vert ab \rangle\, t_i^a t_j^b ,
@@ -20,25 +20,46 @@ E_\text{CCSD} = \langle \Phi_0 | \bar H | \Phi_0 \rangle = \sum_{ia} f_{ia}\, t_
 0 = \langle \Phi_i^a | \bar H | \Phi_0 \rangle , \qquad 0 = \langle \Phi_{ij}^{ab} | \bar H | \Phi_0 \rangle .
 ```
 
-CCD (T = T₂) has one amplitude equation, $`0 = \langle \Phi_{ij}^{ab} | \bar H | \Phi_0 \rangle`$, and its energy is the CCSD energy without the terms that contain t₁.
+CCD (T = T₂) keeps only the second amplitude equation, and its energy drops the terms with t₁.
 
-- `ccgen.py`: the generator. Each part of an equation, for example $`\langle \Phi_{ij}^{ab} | (V_N T_1 T_2)_c | \Phi_0 \rangle`$, is a list of normal-ordered operators built by `make_ops(bra, h, ts)`: `bra` is the excitation level of the projection (0 for the energy, 1 for the T₁ equation, 2 for the T₂ equation), `h` is `"f"` or `"v"`, and `ts` lists the cluster operators, for example `[1, 2]` for T₁T₂. For each list the generator
-  1. finds the allowed, connected full contractions;
+The (T) correction uses the converged t₁ and t₂ from CCSD. With $`D_{ijk}^{abc} = f_{ii} + f_{jj} + f_{kk} - f_{aa} - f_{bb} - f_{cc}`$:
+
+```math
+\text{connected:}\quad D_{ijk}^{abc}\, t_{ijk}^{abc}(c) = \langle \Phi_{ijk}^{abc} | (V_N T_2)_c | \Phi_0 \rangle , \qquad \text{disconnected:}\quad D_{ijk}^{abc}\, t_{ijk}^{abc}(d) = P(i/jk)\, P(a/bc)\; t_i^a \langle jk \Vert bc \rangle ,
+```
+
+```math
+E_{(T)} = \frac{1}{36} \sum_{ijkabc} t_{ijk}^{abc}(c)\, D_{ijk}^{abc} \left[ t_{ijk}^{abc}(c) + t_{ijk}^{abc}(d) \right] .
+```
+
+ccgen generates $`t(c)`$. $`t(d)`$ is written by hand (see Known limitations).
+
+- `ccgen.py`: the generator. `make_ops(bra, h, ts)` builds one part of an equation as a list of normal-ordered operators. `bra` is the excitation level of the projection (0, 1, 2 or 3), `h` is `"f"` or `"v"`, and `ts` lists the cluster operators. For example, `make_ops(1, "v", [1, 2])` is $`\langle \Phi_i^a | (V_N T_1 T_2)_c | \Phi_0 \rangle`$. For each part, ccgen
+  1. finds the connected full contractions;
   2. takes each sign from the number of crossing lines;
-  3. renames the summed indices and attaches integrals, amplitudes and the coefficient: 1/(n!)² for each operator with n creators, times 1/k! for k equal cluster operators, from expanding $`e^T`$;
-  4. brings each term to a standard form and merges equal ones;
-  5. writes one `einsum` line per term, with `optimize=True` so that NumPy contracts two arrays at a time.
-- `provided.py`: lists the parts of each equation and writes the generated code (`python provided.py`):
-  - `ccd_residual.py`: `residual(f, g, t2)`, 125 terms;
-  - `ccsd_residual.py`: `Eccsd`, `Rccsdt1` and `Rccsdt2`, all taking `(f, g, t1, t2)`, with 3, 32 and 293 terms.
-- `ccd.py`, `ccsd.py`: `ccd(R, f, g, N)` and `ccsd(f, g, N, Eccsd, Rccsdt1, Rccsdt2)`, which iterate the generated equations, starting from MP2 amplitudes and zero t₁.
+  3. attaches the integral, the amplitudes and the coefficient: 1/(n!)² for each operator with n creators, and 1/k! for k identical cluster operators;
+  4. merges like terms in three stages: the antisymmetry of ⟨pq‖rs⟩ and t₂ (`merge_antisym`), renaming the summed indices (`merge_dummy`), and a fixed order for identical cluster operators (`merge_t_order`);
+  5. writes one `einsum` line per term, with `optimize=True`.
+- `provided.py`: lists the parts of each equation, and `python provided.py` writes
+  - `ccd_residual.py`: `residual(f, g, t2)`, 18 terms;
+  - `ccsd_residual.py`: `Eccsd`, `Rccsdt1`, `Rccsdt2`, all `(f, g, t1, t2)`, with 3, 14 and 63 terms;
+  - `ccsd_t_residual.py`: `tri(f, g, t1, t2)`, the 18 terms of $`D_{ijk}^{abc}\, t_{ijk}^{abc}(c)`$.
+- `ccd.py`, `ccsd.py`: `ccd(R, f, g, N)` and `ccsd(f, g, N, Eccsd, Rccsdt1, Rccsdt2)` iterate the generated equations, starting from MP2 amplitudes and t₁ = 0. `ccsd` also returns t₁ and t₂.
+- `ccsd_t.py`: `ccsd_t(f, g, N, t1, t2, tri)` returns $`E_{(T)}`$.
 - `run.py`: the example in Usage.
 
 ### What goes in
 
-**Index letters** (spin orbitals): i, j, k, l, m, n are occupied; a, b, c, d, e, f are virtual; p, q, r, s run over all orbitals and are the Hamiltonian's indices before contraction. In a part, i, j, a, b belong to the projection and stay as the free indices of the result. The cluster operators use c–f and k–n, which are summed over.
+**Index letters** (spin orbitals):
+- i–n are occupied, a–f are virtual, and p, q, r, s are the Hamiltonian's indices before contraction.
+- The projection's indices (i, j, a, b) stay free.
+- The cluster operators use k–n and c–f, which are summed over. In the triples projection, k and c are free too, so the cluster operators use l–n and d–f there.
 
-**Input format.** An operator is a tuple `(index, "+" or "-", space, group)`. The space is `"o"` (occupied), `"v"` (virtual) or `"g"` (general); the group says which operator it belongs to: 0 for the projection, 1 for the Hamiltonian, 2, 3, … for the cluster operators. For example `make_ops(2, "v", [2])`, the part $`\langle \Phi_{ij}^{ab} | (V_N T_2)_c | \Phi_0 \rangle`$, is
+**Input format:** an operator is a tuple `(index, "+" or "-", space, group)`.
+- The space is `"o"`, `"v"` or `"g"` (general).
+- The group is 0 for the projection, 1 for the Hamiltonian, and 2, 3, … for the cluster operators.
+
+For example, `make_ops(2, "v", [2])`, which is $`\langle \Phi_{ij}^{ab} | (V_N T_2)_c | \Phi_0 \rangle`$, gives
 
 ```
 [('i', '+', 'o', 0), ('j', '+', 'o', 0), ('b', '-', 'v', 0), ('a', '-', 'v', 0),
@@ -46,45 +67,55 @@ CCD (T = T₂) has one amplitude equation, $`0 = \langle \Phi_{ij}^{ab} | \bar H
  ('c', '+', 'v', 2), ('d', '+', 'v', 2), ('l', '-', 'o', 2), ('k', '-', 'o', 2)]
 ```
 
-Each part is one connected term of $`\bar H`$ projected onto the bra of its equation, named by its operators: VT₁T₂ is the $`(V_N T_1 T_2)_c`$ term, and VT₁² carries a factor ½ from expanding $`e^T`$. `provided.py` passes every combination of `"f"` or `"v"` with the cluster operators up to the order needed. Combinations without a connected full contraction give no terms, so nothing has to be picked out by hand. The parts that do give terms:
+A part is named by its operators: VT₁T₂ is $`(V_N T_1 T_2)_c`$. `provided.py` passes every combination of `"f"` or `"v"` with the cluster operators. Combinations without a connected full contraction give no terms, so nothing is picked by hand. The parts that give terms:
 
-| Equation | Parts (number of terms) | Total |
-|---|---|---|
-| CCD T₂ | V 1, FT₂ 8, VT₂ 18, VT₂² 98 | 125 |
-| CCSD energy | FT₁ 1, VT₂ 1, VT₁² 1 | 3 |
-| CCSD T₁ | F 1, FT₁ 2, FT₂ 4, FT₁² 2, VT₁ 1, VT₂ 4, VT₁² 4, VT₁T₂ 8, VT₁³ 6 | 32 |
-| CCSD T₂ | V 1, FT₂ 8, FT₁T₂ 8, VT₁ 4, VT₂ 18, VT₁² 12, VT₁T₂ 44, VT₂² 98, VT₁³ 24, VT₁²T₂ 52, VT₁⁴ 24 | 293 |
+| Equation | Parts (terms) | Total | First merging stage only |
+|---|---|---|---|
+| CCD T₂ | V 1, FT₂ 4, VT₂ 6, VT₂² 7 | 18 | 125 |
+| CCSD energy | FT₁ 1, VT₂ 1, VT₁² 1 | 3 | 3 |
+| CCSD T₁ | F 1, FT₁ 2, FT₂ 1, FT₁² 1, VT₁ 1, VT₂ 2, VT₁² 2, VT₁T₂ 3, VT₁³ 1 | 14 | 32 |
+| CCSD T₂ | V 1, FT₂ 4, FT₁T₂ 4, VT₁ 4, VT₂ 6, VT₁² 6, VT₁T₂ 16, VT₂² 7, VT₁³ 4, VT₁²T₂ 10, VT₁⁴ 1 | 63 | 293 |
+| (T) connected triples | VT₂ 18 | 18 | 36 |
 
-The generated CCSD energy, for example, is
+The generated CCSD energy is the formula above, term by term:
 
 ```python
 def Eccsd(f, g, t1, t2):
     N = t2.shape[0]
     o = slice(0, N)
     v = slice(N, None)
-    r = 1.0 * np.einsum('kc,kc->', f[o, v], t1, optimize=True)
-    r += 0.25 * np.einsum('klcd,klcd->', g[o, o, v, v], t2, optimize=True)
-    r += 0.5 * np.einsum('klcd,kc,ld->', g[o, o, v, v], t1, t1, optimize=True)
+    r = 1.0 * np.einsum('kc,kc->', t1, f[o, v], optimize=True)
+    r += 0.25 * np.einsum('klcd,klcd->', t2, g[o, o, v, v], optimize=True)
+    r += 0.5 * np.einsum('kc,ld,klcd->', t1, t1, g[o, o, v, v], optimize=True)
     return r
 ```
 
-which is the energy formula above, term by term.
-
 ## Results
 
-Water in STO-3G: CCD converges in 29 iterations to −0.0506409699 Eh and CCSD in 33 iterations to −0.0509029526 Eh (correlation energies); together they take under a second.
+Water in STO-3G, correlation energies: CCD gives −0.0506409699 Eh (29 iterations), CCSD −0.0509029526 Eh (33 iterations), and (T) −0.0000686513 Eh. All three together take under a second.
 
-- CCSD: for 14 molecules in STO-3G, from H₂ to CH₃OH, the correlation energy agrees with PySCF's CCSD (converged to 1e-12) to within 1e-9 Eh, for most of them to about 1e-11 Eh. The largest differences (CO 6e-10, CO₂ 1e-10) come from the SCF orbitals: on PySCF's own orbitals, with the full Fock matrix, CO agrees to 5e-12 Eh.
-- CCSD in larger basis sets: water in 6-31G and cc-pVDZ also agrees with PySCF to about 1e-11 Eh; the cc-pVDZ run (24 basis functions) takes 9 s.
-- CCD: on 18 molecule/basis runs, the result agrees with the hand-written CCD of hf_to_cc to 1e-9 Eh.
+I compared the results with PySCF (converged to 1e-12) for 14 molecules in STO-3G, from H₂ to CH₃OH, and for water in 6-31G and cc-pVDZ:
 
-## Known limitation
+| | Largest difference (Eh) | Most runs (Eh) |
+|---|---|---|
+| CCD, against `pyscf.cc.ccd.CCD` | 3e-9 (CO) | ≲ 1e-10 |
+| CCSD | 6e-10 (CO) | ~ 1e-11 |
+| (T), against `ccsd_t()` (H₂ has no triples) | 7e-10 (CO) | ≲ 1e-11 |
 
-Like terms are not merged yet. Terms that are the same up to the names of the summed indices stay separate, and terms related by swapping i↔j or a↔b are not yet collected into the P(ij), P(ab) of the textbook form. So the CCD residual comes out as 125 `einsum` lines instead of the textbook's ten terms, and CCSD as 3 + 32 + 293. The results are correct, only longer and slower than they need to be; merging like terms is next on the list.
+The CCSD difference for CO comes from the SCF orbitals: on PySCF's own orbitals, CO agrees to 4e-12 Eh. For (T), see Known issue. In cc-pVDZ (24 basis functions), water takes 1.6 s for CCSD and 3 s for (T).
+
+## Known limitations and issues
+
+**Limitations**
+- **Permutation operators:** terms related by i↔j or a↔b are not yet collected into P(ij), P(ab). So CCD comes out as 18 `einsum` lines, where the textbook writes ten terms. The results are not affected.
+- **Disconnected terms:** $`t(d)`$ is not generated. The generator keeps only terms in which every cluster operator is contracted with the Hamiltonian, so `ccsd_t.py` writes $`t(d)`$ by hand.
+
+**Known issue**
+- For CO in STO-3G, (T) differs from PySCF by 5e-10 Eh even on PySCF's own orbitals, where CCSD agrees to 4e-12 Eh. Converging CCSD more tightly does not change it. The cause is not known yet.
 
 ## Usage
 
-The example takes its integrals from [hf_to_cc](https://github.com/Heisenbergnox/hf_to_cc), so clone both repositories next to each other and install the dependencies:
+The example takes its integrals from [hf_to_cc](https://github.com/Heisenbergnox/hf_to_cc). Clone both repositories side by side and install the dependencies:
 
 ```
 git clone https://github.com/Heisenbergnox/hf_to_cc
@@ -93,15 +124,9 @@ pip install numpy scipy pyscf
 cd ccgen-wick
 ```
 
-The generated files `ccd_residual.py` and `ccsd_residual.py` are already in the repository. To generate them again, for example after changing the generator or the lists of parts, run
+The generated files are already in the repository. `python provided.py` writes all three again. It needs only the standard library and takes about 0.1 s.
 
-```
-python provided.py
-```
-
-in the `ccgen-wick` directory. It needs nothing beyond the Python standard library, takes about 0.1 s, and overwrites both files.
-
-Then run `PYTHONPATH=../hf_to_cc python run.py`. It prints the CCD and the CCSD correlation energy (Eh) with the number of iterations: −0.0506409699 and 29, −0.0509029526 and 33.
+`PYTHONPATH=../hf_to_cc python run.py` prints CCD and CCSD (energy in Eh, number of iterations), then (T): −0.0506409699 and 29, −0.0509029526 and 33, −0.0000686513.
 
 ```python
 import numpy as np
@@ -110,17 +135,25 @@ from ccd_residual import residual
 from ccd import ccd
 from ccsd_residual import Eccsd, Rccsdt1, Rccsdt2
 from ccsd import ccsd
+from ccsd_t_residual import tri
+from ccsd_t import ccsd_t
 mol, S, h, eri, E_nuc, N = integrals(H2O, "sto-3g")
 E_hf, eps, C, n_scf = scf_diis(S, h, eri, E_nuc, N)
 mo, h_mo = ao2mo(C, eri, h)
 hso, g = spin_orbitals(mo, h_mo)
 E_ccd, n_iter_ccd = ccd(residual, np.diag(np.repeat(eps, 2)), g, N)
-E_ccsd, n_iter_ccsd = ccsd( np.diag(np.repeat(eps, 2)), g, N, Eccsd, Rccsdt1, Rccsdt2)
+E_ccsd, n_iter_ccsd, t1, t2 = ccsd(np.diag(np.repeat(eps, 2)), g, N, Eccsd, Rccsdt1, Rccsdt2)
+E_t = ccsd_t(np.diag(np.repeat(eps, 2)), g, N, t1, t2, tri)
 print(E_ccd, n_iter_ccd)
 print(E_ccsd, n_iter_ccsd)
+print(E_t)
 ```
 
-The arrays use spin orbitals with the `N` occupied ones first: `g[p, q, r, s]` is $`\langle pq \Vert rs \rangle`$, `t1[i, a]` is $`t_i^a`$ and `t2[i, j, a, b]` is $`t_{ij}^{ab}`$. `f` is the Fock matrix in the same basis. For canonical Hartree–Fock orbitals it is diagonal, with the orbital energies on the diagonal, which is what `np.diag(np.repeat(eps, 2))` builds; the generated equations also take a full Fock matrix, including its occupied–virtual block.
+**Conventions:**
+- Spin orbitals, with the `N` occupied ones first.
+- `g[p, q, r, s]` is $`\langle pq \Vert rs \rangle`$, `t1[i, a]` is $`t_i^a`$, and `t2[i, j, a, b]` is $`t_{ij}^{ab}`$.
+- `f` is the Fock matrix. For canonical HF orbitals it is `np.diag(np.repeat(eps, 2))`, but the generated equations also accept a full Fock matrix.
+- `ccsd_t` assumes canonical orbitals and takes the orbital energies from the diagonal of `f`.
 
 ## License
 

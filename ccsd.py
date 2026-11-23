@@ -20,7 +20,7 @@ def ccsd(f, g, N, Eccsd, Rccsdt1, Rccsdt2, tol=1e-12):
         E_n = Eccsd(f, g, t1_n, t2_n)
 
         if np.abs(E_n - E_o) < tol:
-            return E_n, n_iter
+            return E_n, n_iter, t1_n, t2_n
         t1_o = t1_n
         t2_o = t2_n
         E_o = E_n
