@@ -47,6 +47,7 @@ ccgen generates $`t(c)`$. $`t(d)`$ is written by hand (see Known limitations).
 - `ccd.py`, `ccsd.py`: `ccd(R, f, g, N)` and `ccsd(f, g, N, Eccsd, Rccsdt1, Rccsdt2)` iterate the generated equations, starting from MP2 amplitudes and t₁ = 0. `ccsd` also returns t₁ and t₂.
 - `ccsd_t.py`: `ccsd_t(f, g, N, t1, t2, tri)` returns $`E_{(T)}`$.
 - `run.py`: the example in Usage.
+- `derivations2code.pdf`: three examples worked by hand, linking the Wick's theorem derivations and the Goldstone diagrams to the code.
 
 ### What goes in
 
